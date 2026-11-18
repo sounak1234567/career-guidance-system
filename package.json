@@ -1,0 +1,21 @@
+{
+  "name": "career-guidance-system",
+  "private": "true",
+  "workspaces": [
+    "backend",
+    "frontend",
+    "shared"
+  ],
+  "scripts": {
+    "dev": "concurrently -n \"API, WEB\" -c \"cyan, green\" \"npm run dev -w backend\" \"npm run dev -w frontend\"",
+    "build": "npm run build -w shared && npm run build -w backend && npm run build -w frontend"
+  },
+  "dependencies": {
+    "concurrently": "^10.0.7"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.7",
+    "typescript": "^7.0.2"
+  },
+  "type": "module"
+}
