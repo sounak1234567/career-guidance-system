@@ -11,6 +11,7 @@ export const db = drizzle(client, { schema })
 
 export async function saveUserResume({
     userId, 
+    title,
     rawText, 
     structuredData, 
     atsScore, 
@@ -18,17 +19,26 @@ export async function saveUserResume({
     embedding
 } : {
     userId: number;
+    title: string;
     rawText: string;
     structuredData: any;
     atsScore: number;
     atsFeedback: any;
     embedding: number[];
 }) {
+    var t;
+    if(title === ""){
+        t = `${userId}_AI_resume`;
+    }
+    else{
+        t = title;
+    }
     const [inserted] = await db
         .insert(schema.resumes)
         .values({
             userId, 
             rawText,
+            title: t,
             structuredData,
             atsScore,
             atsFeedback,

@@ -3,6 +3,7 @@ import { configDotenv } from "dotenv";
 import cors from "cors";
 import authRoutes from "./routes/auth";
 import chatRoutes from "./routes/chat";
+import profileRoutes from "./routes/profile";
 
 configDotenv();
 
@@ -21,6 +22,7 @@ app.get("/api/health", (_req, res) => {
 
 app.use("/api/auth", authRoutes);
 app.use("/api/chat", chatRoutes);
+app.use("/api/profile", profileRoutes);
 
 if(process.env.NODE_ENV !== "production"){
   port = Number(process.env.PORT) || 3000;

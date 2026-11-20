@@ -4,14 +4,16 @@ import { trimMessages } from "@langchain/core/messages";
 import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 import { PostgresStore } from "@langchain/langgraph-checkpoint-postgres/store";
 import { SystemMessage, AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages"
-import { ChatGoogle } from "@langchain/google"
+import { ChatGoogle } from "@langchain/google"; 
 import { configDotenv } from "dotenv";
 import * as pdfmake from "pdfmake";
 import { TDocumentDefinitions } from "pdfmake/interfaces";
 import { string, z } from "zod/v4";
 import * as readline from "readline";
 import { BaseStore } from "@langchain/core/stores";
-import { saveUserResume } from "../db/index"
+import { saveUserResume } from "../db/index";
+import { embedResumeData, ResumeData } from "./embeddings";
+import { HitlDecision } from "../../../shared/types";
 
 const rl = readline.createInterface({
     input: process.stdin,
@@ -116,19 +118,27 @@ const makeResume = tool(
                 },
             },
         };
-        // const decision = interrupt({
-        //     type: "RESUME_GENERATION_CONFIRMATION",
-        //     message: "Please confirm that you want to generate the resume.",
-        //     proposedChanges: {}
+        const decision: HitlDecision = interrupt({
+            type: "RESUME_GENERATION_CONFIRMATION",
+            message: "Please confirm that you want to generate the resume.",
+            proposedChanges: {"Create Resume?": "Need confirmation"}
+        });
+        // pdfmake.createPdf(docDefinition).write("document.pdf").catch((err) => {
+        //     return `Error creating resume: ${err.message}`;
         // });
-        pdfmake.createPdf(docDefinition).write("document.pdf").catch((err) => {
-            return `Error creating resume: ${err.message}`;
-        });
-        return JSON.stringify({
-            docDef: docDefinition, 
-            user_id: config.configurable?.userId,
-            content: contents
-        });
+        if(decision.action == "approve") {
+            return JSON.stringify({
+                docDef: docDefinition, 
+                user_id: config.configurable?.userId,
+                content: contents, 
+                flag: "make_resume"
+            });
+        }
+        else if(decision.action == "reject") {
+            return JSON.stringify({
+                flag: "Resume generation rejected"
+            });
+        }
     }, {
     name: "make_resume",
     description: "Create a PDF resume",
@@ -299,7 +309,7 @@ const saveResumeNode: GraphNode<typeof State> = async (state) => {
             summary: content.summary, 
             experience: [{role: "", company: "", duration: "", bullets: [""] }]
         };
-        await saveUserResume({  userId: userId, rawText: rawText, structuredData: structData, atsScore: 0, atsFeedback: {}, embedding: [0, 0, 0] });
+        await saveUserResume({  userId: userId, title: "", rawText: rawText, structuredData: structData, atsScore: 0, atsFeedback: {}, embedding: [0, 0, 0] });
     }
     return state;
 }
@@ -317,8 +327,9 @@ const shouldSaveResume: ConditionalEdgeRouter<{ InputSchema: typeof State; Nodes
     const lastMessage = state.messages.at(-1);
     if(lastMessage == null || !AIMessage.isInstance(lastMessage)) return "llm";
     if(ToolMessage.isInstance(lastMessage)){
-        const msg = <ToolMessage>lastMessage; 
-        if(msg.tool_call_id === makeResume.name) return "save_resume";
+        const msg = (<ToolMessage>lastMessage).content; 
+        const tool_decision = JSON.parse(<string>msg);
+        if(tool_decision.flag === "make_resume") return "save_resume";
         else return "llm";
     }
     return "llm";
