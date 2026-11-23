@@ -33,6 +33,9 @@ router.post("/resume-pdf", requireAuth, async (req: AuthRequest, res: any) => {
     try {
         const userId = req.user!.id;
         const [resumeData] = await db.select().from(resumes).where(eq(resumes.title, `${userId}_AI_resume`)).limit(1);
+        if (!resumeData) {
+            return res.status(404).json({ error: "Resume not found" });
+        }
         const summary = resumeData.rawText;
         const { email, phone, github, linkedin } = resumeData.structuredData?.contact || {};
         const contactParts = [

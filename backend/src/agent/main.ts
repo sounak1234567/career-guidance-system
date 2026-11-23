@@ -11,8 +11,10 @@ import { TDocumentDefinitions } from "pdfmake/interfaces";
 import { string, z } from "zod/v4";
 import * as readline from "readline";
 import { BaseStore } from "@langchain/core/stores";
-import { saveUserResume } from "../db/index";
+import { db, saveUserResume } from "../db/index";
 import { embedResumeData, ResumeData } from "./embeddings";
+import { users } from "../db/schema";
+import { eq } from "drizzle-orm";
 import { HitlDecision } from "../../../shared/types";
 
 const rl = readline.createInterface({
@@ -37,14 +39,19 @@ const State = new StateSchema({
 });
 
 const makeResume = tool(
-    ({ contents }, config: ToolRuntime) => {
-        const { uname, jobTitle, contacts, location, summary } = contents;
+    async ({ summary }, config: LangGraphRunnableConfig) => {
+        const [u] = await db
+            .select()
+            .from(users)
+            .where(eq(users.id, config.configurable?.userId));
+        const existing = await config.store?.get(["memories" + `${config.configurable?.userId}`], "career_details");
+        const jobTitle = existing?.value?.jobTitle || null;
         const contactParts = [
-            contacts.email,
-            contacts.gitHub !== "Not provided" ? contacts.gitHub : null,
-            contacts.linkedIn !== "Not provided" ? contacts.linkedIn : null,
-            contacts.phone !== "Not provided" ? contacts.phone : null,
-            location !== "Unknown" ? location : null,
+            u.email,
+            existing?.value?.gitHub || null,
+            existing?.value?.linkedIn || null,
+            existing?.value?.phone || null,
+            existing?.value?.location || null,
         ].filter(Boolean);
         const docDefinition: TDocumentDefinitions = {
             pageSize: "A4",
@@ -58,7 +65,7 @@ const makeResume = tool(
             content: [
                 // --- HEADER SECTION ---
                 {
-                    text: uname,
+                    text: u.name,
                     fontSize: 22,
                     bold: true,
                     color: "#111111",
@@ -126,35 +133,36 @@ const makeResume = tool(
         // pdfmake.createPdf(docDefinition).write("document.pdf").catch((err) => {
         //     return `Error creating resume: ${err.message}`;
         // });
-        if(decision.action == "approve") {
-            return JSON.stringify({
-                docDef: docDefinition, 
-                user_id: config.configurable?.userId,
-                content: contents, 
-                flag: "make_resume"
-            });
+        if(decision.action == "approve"){
+            const userProfile = existing?.value;
+            const rData: ResumeData = {
+                targetRole: Array.isArray(userProfile?.targetRole) ? userProfile.targetRole : [],
+                education: userProfile?.graduationYear || "",
+                skills: Array.isArray(userProfile?.skills) ? userProfile.skills : [],
+                projects: Array.isArray(userProfile?.projects) ? userProfile.projects : [],
+                jobExperience: Array.isArray(userProfile?.jobExperience) ? userProfile.jobExperience : []
+            };
+            const structData = {
+                contact: {
+                    email: u.email, 
+                    phone: existing?.value.phone || "", 
+                    gitHub: existing?.value.gitHub || "", 
+                    linkedin: existing?.value.linkedin || ""
+                }, 
+                summary: summary, 
+                experience: {role: "", company: "", duration: "", bullets: ["", ""]}
+            };
+            const embeddings = await embedResumeData(rData, "RETRIEVAL_DOCUMENT");
+            const ins = await saveUserResume({  userId: config.configurable?.userId, title: "", rawText: JSON.stringify(docDefinition), structuredData: structData, atsScore: 0, atsFeedback: {}, embedding: embeddings });
+            if(!ins) return `Error saving resume. Draft: ${docDefinition}`;
+            return "Resume created and saved to database successfully";
         }
-        else if(decision.action == "reject") {
-            return JSON.stringify({
-                flag: "Resume generation rejected"
-            });
-        }
+        else return "rejected";
     }, {
     name: "make_resume",
-    description: "Create a PDF resume",
+    description: "Just input a generated summary of user's professional career, and the resume draft will be generated",
     schema: z.object({
-        contents: z.object({
-            uname: z.string().describe("The user's full name"),
-            jobTitle: z.string().describe("The user's job title").default("Not specified"),
-            contacts: z.object({
-                email: z.string().describe("The user's email address"),
-                phone: z.string().describe("The user's phone number").default("Not provided"),
-                linkedIn: z.string().describe("The user's LinkedIn profile URL").default("Not provided"),
-                gitHub: z.string().describe("The user's GitHub profile URL").default("Not provided")
-            }),
-            location: z.string().describe("The user's location").default("Unknown"), 
-            summary: z.string().describe("The user's professional summary").default("Not provided")
-        })
+        summary: z.string().describe("Generate user's professional summary").default("Not provided")
     })
 }
 );
@@ -204,21 +212,7 @@ const updateMemory = tool(
     }
 );
 
-const add = tool(
-    ({ a, b }, config: ToolRuntime) => {
-        return `${a + b}`;
-    }, {
-    name: "add_number",
-    description: "Add two numbers",
-    schema: z.object({
-        a: z.number(),
-        b: z.number()
-    })
-}
-);
-
 const toolByName: Record<string, DynamicStructuredTool> = {
-    [add.name]: add,
     [makeResume.name]: makeResume,
     [updateMemory.name]: updateMemory
 };
@@ -237,7 +231,7 @@ async function fetchMemory(namespace: string[], store: PostgresStore){
 }
 
 const llm_node: GraphNode<typeof State> = async (state, runtime) => {
-    const userId = runtime.context?.userId;
+    const userId = runtime.configurable?.userId;
     const namespace = ["memories" + `${userId}`];
     const existing = await runtime.store?.get(namespace, "career_details");
     const userProfile = existing?.value ? JSON.stringify(existing.value, null, 2) : " ";
@@ -248,6 +242,7 @@ const llm_node: GraphNode<typeof State> = async (state, runtime) => {
     //     endOn: ["human", "tool"],
     //     tokenCounter: llm
     // })
+    console.log(`User Profile: ${userProfile}`);
     const response = await llmWithTools.invoke([
         new SystemMessage(`
             You are an AI Career Advisor.
@@ -272,47 +267,10 @@ const toolNode: GraphNode<typeof State> = async (state) => {
         console.log(`Invoking tool: ${req_tool}`);
         const observation = await req_tool.invoke(toolCall.args);
         const content = JSON.stringify(observation);
-        result.push(new ToolMessage({content,  tool_call_id: <string>toolCall.name,}));
-        // if(toolCall.name === add.name){
-        //     const args = add.schema.parse(toolCall.args);
-        //     const observation = await add.invoke(args);
-        //     const content = JSON.stringify(observation);
-        //     result.push(new ToolMessage({content,  tool_call_id: <string>toolCall.id,}));
-        // }
-        // else if(toolCall.name == makeResume.name){
-        //     const args = makeResume.schema.parse(toolCall.args);
-        //     const observation = await makeResume.invoke(args);
-        //     const content = JSON.stringify(observation);
-        //     result.push(new ToolMessage({content,  tool_call_id: <string>toolCall.id,}));
-        // }
+        result.push(new ToolMessage({content,  tool_call_id: <string>toolCall.id,}));
     }
     return { messages: result };
 };
-
-const saveResumeNode: GraphNode<typeof State> = async (state) => {
-    const lastMsg = state.messages.at(-1);
-    if (ToolMessage.isInstance(lastMsg) && lastMsg.tool_call_id === makeResume.name) {
-        const msg = (<ToolMessage>lastMsg).content;
-        const resumeData = JSON.parse(<string>msg);
-        const { docDef, user_id, content } = resumeData;
-        const userId = <number>user_id;
-        const id = `${user_id}_${content.jobTitle}_AI`;
-        const rawText = content.summary;
-        const atsFeedback = "This resume was generated by an AI assistant. Upload your own resume for better results.";
-        const structData = {
-            contact: {
-                email: content.contacts.email,
-                phone: content.contacts.phone,
-                github: content.contacts.github,
-                linkedin: content.contacts.linkedin
-            },
-            summary: content.summary, 
-            experience: [{role: "", company: "", duration: "", bullets: [""] }]
-        };
-        await saveUserResume({  userId: userId, title: "", rawText: rawText, structuredData: structData, atsScore: 0, atsFeedback: {}, embedding: [0, 0, 0] });
-    }
-    return state;
-}
 
 const shouldContinue: ConditionalEdgeRouter<{ InputSchema: typeof State; Nodes: "tool" }> = (state) => {
     console.log("Checking if conversation should continue...");
@@ -322,52 +280,34 @@ const shouldContinue: ConditionalEdgeRouter<{ InputSchema: typeof State; Nodes: 
     return END;
 }
 
-const shouldSaveResume: ConditionalEdgeRouter<{ InputSchema: typeof State; Nodes: ["llm", "save_resume"] }> = (state) => {
-    console.log("Checking if resume should be saved...");
-    const lastMessage = state.messages.at(-1);
-    if(lastMessage == null || !AIMessage.isInstance(lastMessage)) return "llm";
-    if(ToolMessage.isInstance(lastMessage)){
-        const msg = (<ToolMessage>lastMessage).content; 
-        const tool_decision = JSON.parse(<string>msg);
-        if(tool_decision.flag === "make_resume") return "save_resume";
-        else return "llm";
-    }
-    return "llm";
-};
-
 const graph = new StateGraph(State)
     .addNode("llm", llm_node)
     .addNode("tool", toolNode)
-    .addNode("save_resume", saveResumeNode)
     .addEdge(START, "llm")
     .addConditionalEdges("llm", shouldContinue, ["tool", END])
-    .addConditionalEdges("tool", shouldSaveResume, ["save_resume", "llm"])
     .addEdge("tool", "llm")
     .addEdge("llm", END)
-    .addEdge("save_resume", "llm")
     .compile({ checkpointer, store });
 
-const userId = "test"; // req.user.id
-const conversationId = "stupidity"; //req.body.conversationId
-const config = {
-    configurable: {
-        thread_id: `user_${userId}_thread_${conversationId}`
-    },
-    context: { user_id: userId }
-}
+// const userId = "test"; // req.user.id
+// const conversationId = "stupidity"; //req.body.conversationId
+// const config = {
+//     configurable: {
+//         thread_id: `user_${userId}_thread_${conversationId}`
+//     },
+//     context: { user_id: userId }
+// }
 
 export { graph, store, makeResume };
 
-console.log("Invoking graph...");
-
-const query = "Hi, I am an AI/ML developer"
-const result = await graph.invoke({ messages: [new HumanMessage(query)] }, config);
-const lastMessage = result.messages.at(-1);
-const finalOutput = lastMessage?.contentBlocks
-    .filter((block) => block.type === "text")
-    .map((block) => block.text)
-    .join("") ?? "";
-console.log(`Cora: ${finalOutput}`);
+// const query = "Hi, I am an AI/ML developer"
+// const result = await graph.invoke({ messages: [new HumanMessage(query)] }, config);
+// const lastMessage = result.messages.at(-1);
+// const finalOutput = lastMessage?.contentBlocks
+//     .filter((block) => block.type === "text")
+//     .map((block) => block.text)
+//     .join("") ?? "";
+// console.log(`Cora: ${finalOutput}`);
 
 // var flag = true;
 // while(flag){

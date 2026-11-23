@@ -8,7 +8,7 @@ const ai = new GoogleGenAI({
 });
 
 export interface ResumeData {
-    targetRole: string;
+    targetRole: string[];
     education: string;
     skills: string[];
     projects: string[];
@@ -20,7 +20,7 @@ export async function embedResumeData(
     taskType: "RETRIEVAL_DOCUMENT" | "RETRIEVAL_QUERY"
 ) : Promise<number[]> {
     const searchableText = [
-        resumeData.targetRole ? `Target Role: ${resumeData.targetRole}` : "",
+        Array.isArray(resumeData.targetRole) ? `Target Role: ${resumeData.targetRole.join("; ")}` : "",
         resumeData.education ? `Education: ${resumeData.education}` : "",
         Array.isArray(resumeData.skills) ? `Skills: ${resumeData.skills.join("; ")}` : "", 
         Array.isArray(resumeData.projects) ? `Projects: ${resumeData.projects.join("; ")}` : "",
