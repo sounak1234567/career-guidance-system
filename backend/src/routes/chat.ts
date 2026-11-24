@@ -34,10 +34,12 @@ router.post("/", requireAuth, async (req: AuthRequest, res) => {
                 userId
             }
         };
+        console.log("Invoking graph with message:", message);
         const result = await graph.invoke(
             { messages: [new HumanMessage(message)], },
             config 
         );
+        console.log("Graph result:", result);
         if(isInterrupted(result) && result.__interrupt__?.length > 0){
             res.json({
                 status: "interrupted",
@@ -50,6 +52,7 @@ router.post("/", requireAuth, async (req: AuthRequest, res) => {
             reply: extractReplyText(result.messages),
         });
     } catch (err) {
+        console.log("user details:", req.user);
         console.error("Chat error:", err);
         res.status(500).json({ error: "Agent execution failed" });
     }

@@ -4,13 +4,18 @@ import { trimMessages } from "@langchain/core/messages";
 import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 import { PostgresStore } from "@langchain/langgraph-checkpoint-postgres/store";
 import { SystemMessage, AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages"
-import { ChatGoogle } from "@langchain/google"
+import { ChatGoogle } from "@langchain/google"; 
 import { configDotenv } from "dotenv";
 import * as pdfmake from "pdfmake";
 import { TDocumentDefinitions } from "pdfmake/interfaces";
 import { string, z } from "zod/v4";
 import * as readline from "readline";
 import { BaseStore } from "@langchain/core/stores";
+import { db, saveUserResume } from "../db/index";
+import { embedResumeData, ResumeData } from "./embeddings";
+import { users } from "../db/schema";
+import { eq } from "drizzle-orm";
+import { HitlDecision } from "../../../shared/types";
 
 const rl = readline.createInterface({
     input: process.stdin,
@@ -34,13 +39,19 @@ const State = new StateSchema({
 });
 
 const makeResume = tool(
-    ({ contents }, config: ToolRuntime) => {
-        const { uname, jobTitle, contacts, location } = contents;
+    async ({ summary }, config: LangGraphRunnableConfig) => {
+        const [u] = await db
+            .select()
+            .from(users)
+            .where(eq(users.id, config.configurable?.userId));
+        const existing = await config.store?.get(["memories" + `${config.configurable?.userId}`], "career_details");
+        const jobTitle = existing?.value?.jobTitle || null;
         const contactParts = [
-            contacts.email,
-            contacts.phone !== "Not provided" ? contacts.phone : null,
-            contacts.linkedIn !== "Not provided" ? contacts.linkedIn : null,
-            location !== "Unknown" ? location : null,
+            u.email,
+            existing?.value?.gitHub || null,
+            existing?.value?.linkedIn || null,
+            existing?.value?.phone || null,
+            existing?.value?.location || null,
         ].filter(Boolean);
         const docDefinition: TDocumentDefinitions = {
             pageSize: "A4",
@@ -54,7 +65,7 @@ const makeResume = tool(
             content: [
                 // --- HEADER SECTION ---
                 {
-                    text: uname,
+                    text: u.name,
                     fontSize: 22,
                     bold: true,
                     color: "#111111",
@@ -62,7 +73,7 @@ const makeResume = tool(
                     margin: [0, 0, 0, 4],
                 },
                 {
-                    text: jobTitle && jobTitle !== "Not specified" ? jobTitle.toUpperCase() : "",
+                    text: (jobTitle && jobTitle !== "Not specified") ? jobTitle.toUpperCase() : "Your job title",
                     fontSize: 11,
                     bold: true,
                     color: "#555555",
@@ -99,7 +110,7 @@ const makeResume = tool(
                     style: "sectionHeader",
                 },
                 {
-                    text: "Results-driven computer science professional specializing in building scalable software systems and AI architectures. Adept at leveraging modern web technologies and machine learning pipelines to solve complex real-world problems.",
+                    text: summary,
                     margin: [0, 0, 0, 12],
                 },
             ],
@@ -114,29 +125,44 @@ const makeResume = tool(
                 },
             },
         };
-        const decision = interrupt({
+        const decision: HitlDecision = interrupt({
             type: "RESUME_GENERATION_CONFIRMATION",
             message: "Please confirm that you want to generate the resume.",
-            proposedChanges: {}
+            proposedChanges: {"Create Resume?": "Need confirmation"}
         });
-        pdfmake.createPdf(docDefinition).write("document.pdf").catch((err) => {
-            return `Error creating resume: ${err.message}`;
-        });
-        return "success";
+        // pdfmake.createPdf(docDefinition).write("document.pdf").catch((err) => {
+        //     return `Error creating resume: ${err.message}`;
+        // });
+        if(decision.action == "approve"){
+            const userProfile = existing?.value;
+            const rData: ResumeData = {
+                targetRole: Array.isArray(userProfile?.targetRole) ? userProfile.targetRole : [],
+                education: userProfile?.graduationYear || "",
+                skills: Array.isArray(userProfile?.skills) ? userProfile.skills : [],
+                projects: Array.isArray(userProfile?.projects) ? userProfile.projects : [],
+                jobExperience: Array.isArray(userProfile?.jobExperience) ? userProfile.jobExperience : []
+            };
+            const structData = {
+                contact: {
+                    email: u.email, 
+                    phone: existing?.value.phone || "", 
+                    gitHub: existing?.value.gitHub || "", 
+                    linkedin: existing?.value.linkedin || ""
+                }, 
+                summary: summary, 
+                experience: {role: "", company: "", duration: "", bullets: ["", ""]}
+            };
+            const embeddings = await embedResumeData(rData, "RETRIEVAL_DOCUMENT");
+            const ins = await saveUserResume({  userId: config.configurable?.userId, title: "", rawText: JSON.stringify(docDefinition), structuredData: structData, atsScore: 0, atsFeedback: {}, embedding: embeddings });
+            if(!ins) return `Error saving resume. Draft: ${docDefinition}`;
+            return "Resume created and saved to database successfully";
+        }
+        else return "rejected";
     }, {
     name: "make_resume",
-    description: "Create a PDF resume",
+    description: "Just input a generated summary of user's professional career, and the resume draft will be generated",
     schema: z.object({
-        contents: z.object({
-            uname: z.string().describe("The user's full name"),
-            jobTitle: z.string().describe("The user's job title").default("Not specified"),
-            contacts: z.object({
-                email: z.string().describe("The user's email address"),
-                phone: z.string().describe("The user's phone number").default("Not provided"),
-                linkedIn: z.string().describe("The user's LinkedIn profile URL").default("Not provided")
-            }),
-            location: z.string().describe("The user's location").default("Unknown")
-        })
+        summary: z.string().describe("Generate user's professional summary").default("Not provided")
     })
 }
 );
@@ -144,7 +170,7 @@ const makeResume = tool(
 const updateMemory = tool(
     async (patch, config: LangGraphRunnableConfig) => {
         const store =  config.store;
-        const userId = config.configurable?.user_id;
+        const userId = config.configurable?.userId;
         if(!store || !userId) return "Memory store not available or offline";
         const namespace = ["memories" + `${userId}`];
         const existing = await store.get(namespace, "career_details");
@@ -186,22 +212,9 @@ const updateMemory = tool(
     }
 );
 
-const add = tool(
-    ({ a, b }, config: ToolRuntime) => {
-        return `${a + b}`;
-    }, {
-    name: "add_number",
-    description: "Add two numbers",
-    schema: z.object({
-        a: z.number(),
-        b: z.number()
-    })
-}
-);
-
 const toolByName: Record<string, DynamicStructuredTool> = {
-    [add.name]: add,
     [makeResume.name]: makeResume,
+    [updateMemory.name]: updateMemory
 };
 const tools = Object.values(toolByName);
 const llm = new ChatGoogle({ model: "gemma-4-26b-a4b-it" });
@@ -218,28 +231,29 @@ async function fetchMemory(namespace: string[], store: PostgresStore){
 }
 
 const llm_node: GraphNode<typeof State> = async (state, runtime) => {
-    const userId = runtime.context?.user_id;
+    const userId = runtime.configurable?.userId;
     const namespace = ["memories" + `${userId}`];
     const existing = await runtime.store?.get(namespace, "career_details");
     const userProfile = existing?.value ? JSON.stringify(existing.value, null, 2) : " ";
-    const message = await trimMessages(state.messages, {
-        strategy: "last",
-        maxTokens: 128,
-        startOn: "human",
-        endOn: ["human", "tool"],
-        tokenCounter: llm
-    })
+    // const message = await trimMessages(state.messages, {
+    //     strategy: "last",
+    //     maxTokens: 1024,
+    //     startOn: "human",
+    //     endOn: ["human", "tool"],
+    //     tokenCounter: llm
+    // })
+    console.log(`User Profile: ${userProfile}`);
     const response = await llmWithTools.invoke([
         new SystemMessage(`
-            You are an AI Career Advisor.
+            You are Cora, an AI Career Advisor.
             Current User Long-Term Memory:
             ${userProfile}
 
             If the user mentions any new skills, projects, experience, or personal facts not listed above (or contradicts existing ones), call 'update_user_memory' to save them.
         `),
-        ...message
+        ...state.messages
     ])
-    return { messages: [response], LLM_calls: 1 }
+    return { messages: [response], LLM_calls: 1 };
 }
 
 const toolNode: GraphNode<typeof State> = async (state) => {
@@ -248,31 +262,21 @@ const toolNode: GraphNode<typeof State> = async (state) => {
     if(lastMessage == null || !AIMessage.isInstance(lastMessage)) return {messages: []};
 
     const result: ToolMessage[] = [];
-    for(const toolCall of lastMessage.tool_calls ?? []) {
+    for(const toolCall of lastMessage.tool_calls ?? []) {      
         const req_tool = toolByName[toolCall.name];
+        console.log(`Invoking tool: ${req_tool}`);
         const observation = await req_tool.invoke(toolCall.args);
         const content = JSON.stringify(observation);
         result.push(new ToolMessage({content,  tool_call_id: <string>toolCall.id,}));
-        // if(toolCall.name === add.name){
-        //     const args = add.schema.parse(toolCall.args);
-        //     const observation = await add.invoke(args);
-        //     const content = JSON.stringify(observation);
-        //     result.push(new ToolMessage({content,  tool_call_id: <string>toolCall.id,}));
-        // }
-        // else if(toolCall.name == makeResume.name){
-        //     const args = makeResume.schema.parse(toolCall.args);
-        //     const observation = await makeResume.invoke(args);
-        //     const content = JSON.stringify(observation);
-        //     result.push(new ToolMessage({content,  tool_call_id: <string>toolCall.id,}));
-        // }
     }
     return { messages: result };
 };
 
-const shouldContinue: ConditionalEdgeRouter<{ InputSchema: typeof State; Nodes: "toolNode" }> = (state) => {
+const shouldContinue: ConditionalEdgeRouter<{ InputSchema: typeof State; Nodes: "tool" }> = (state) => {
+    console.log("Checking if conversation should continue...");
     const lastMessage = state.messages.at(-1);
     if(lastMessage == null || !AIMessage.isInstance(lastMessage)) return END;
-    if(lastMessage.tool_calls?.length) return "toolNode";
+    if(lastMessage.tool_calls?.length) return "tool";
     return END;
 }
 
@@ -281,32 +285,29 @@ const graph = new StateGraph(State)
     .addNode("tool", toolNode)
     .addEdge(START, "llm")
     .addConditionalEdges("llm", shouldContinue, ["tool", END])
-    .addEdge("tool", END)
+    .addEdge("tool", "llm")
     .addEdge("llm", END)
     .compile({ checkpointer, store });
 
-const userId = 1; // req.user.id
-const conversationId = 1; //req.body.conversationId
-const config = {
-    configurable: {
-        thread_id: `user_${userId}_thread_${conversationId}`
-    },
-    context: { user_id: userId }
-}
-
-export { graph, store };
-
-// console.log("Invoking graph...");
-
-// async function agentLoop(query: string){
-//     const result = await graph.invoke({ messages: [new HumanMessage(query)] }, config);
-//     const lastMessage = result.messages.at(-1);
-//     const finalOutput = lastMessage?.contentBlocks
-//         .filter((block) => block.type === "text")
-//         .map((block) => block.text)
-//         .join("") ?? "";
-//     console.log(`Cora: ${finalOutput}`);
+// const userId = "test"; // req.user.id
+// const conversationId = "stupidity"; //req.body.conversationId
+// const config = {
+//     configurable: {
+//         thread_id: `user_${userId}_thread_${conversationId}`
+//     },
+//     context: { user_id: userId }
 // }
+
+export { graph, store, makeResume };
+
+// const query = "Hi, I am an AI/ML developer"
+// const result = await graph.invoke({ messages: [new HumanMessage(query)] }, config);
+// const lastMessage = result.messages.at(-1);
+// const finalOutput = lastMessage?.contentBlocks
+//     .filter((block) => block.type === "text")
+//     .map((block) => block.text)
+//     .join("") ?? "";
+// console.log(`Cora: ${finalOutput}`);
 
 // var flag = true;
 // while(flag){
