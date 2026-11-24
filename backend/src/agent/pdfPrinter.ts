@@ -2,35 +2,35 @@ import { createRequire } from "node:module";
 import type { TDocumentDefinitions } from "pdfmake/interfaces";
 
 const require = createRequire(import.meta.url);
-const pdfPrinter = require("pdfmake/js/Printer.js").default  || require("pdfmake/js/Printer.js");
+const pdfmake = require("pdfmake");
+const vfsFonts = require("pdfmake/build/vfs_fonts");
 
-const robotoBase = "pdfmake/build/fonts/Roboto/";
+const vfs = vfsFonts.pdfmake ? vfsFonts.pdfmake.vfs : vfsFonts;
+if(typeof pdfmake.addVirtualFileSystem === "function") {
+    pdfmake.addVirtualFileSystem(vfs);
+}
+else {
+    pdfmake.vfs = vfs;
+}
 
 const fonts = {
     Roboto: {
-        normal: `${robotoBase}Roboto-Regular.ttf`, 
-        bold: `${robotoBase}Roboto-Medium.ttf`, 
-        italics: `${robotoBase}Roboto-Italic.ttf`,
-        boldItalics: `${robotoBase}Roboto-MediumItalic.ttf`
-    }
+        normal: 'https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.1.66/fonts/Roboto/Roboto-Regular.ttf',
+    bold:   'https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.1.66/fonts/Roboto/Roboto-Medium.ttf',
+    italics: 'https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.1.66/fonts/Roboto/Roboto-Italic.ttf',
+    bolditalics: 'https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.1.66/fonts/Roboto/Roboto-MediumItalic.ttf'
+    },
+};
+
+if(pdfmake.addFonts === "function") {
+    pdfmake.addFonts(fonts);
+}
+else{
+    pdfmake.fonts = fonts;
 }
 
-const printer = new pdfPrinter(fonts);
-
-export async function buildPdfBuffer(docDefinition: TDocumentDefinitions): Promise<Buffer> {
-    return new Promise(async (resolve, reject) => {
-        try {
-            const pdfDoc = await printer.createPdf(docDefinition);
-            const chunks: Uint8Array[] = [];
-            console.log(pdfDoc);
-
-            pdfDoc.on("data", (chunk: Uint8Array) => chunks.push(chunk));
-            pdfDoc.on("end", () => resolve(Buffer.concat(chunks)));
-            pdfDoc.on("error", (err: Error) => reject(err));
-
-            pdfDoc.end();
-        } catch (error) {
-            reject(error);
-        }
-    })
-} 
+export async function buildPdfBuffer(docDefinitions: TDocumentDefinitions) {
+    const pdf = pdfmake.createPdf(docDefinitions);
+    const result = await pdf.getBuffer();
+    return Buffer.isBuffer(result) ? result : Buffer.from(result);
+}
