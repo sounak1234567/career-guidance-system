@@ -20,4 +20,27 @@ async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> 
     return data as T;
 }
 
+export async function downloadResumePdf(): Promise<void> {
+    const token = getToken();
+    const res = await fetch("/api/resume/pdf", {
+        method: "GET",
+        headers: {
+            ...(token ? { "Authorization": `Bearer ${token}` } : {})
+        },
+    });
+    if(!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Failed to download PDF" }));
+        throw new Error(err.error || "Failed to download PDF");
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "Career_Resume.pdf";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+}
+
 export { getToken, setToken, clearToken, apiFetch };
