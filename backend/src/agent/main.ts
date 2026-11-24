@@ -245,7 +245,7 @@ const llm_node: GraphNode<typeof State> = async (state, runtime) => {
     console.log(`User Profile: ${userProfile}`);
     const response = await llmWithTools.invoke([
         new SystemMessage(`
-            You are an AI Career Advisor.
+            You are Cora, an AI Career Advisor.
             Current User Long-Term Memory:
             ${userProfile}
 
@@ -253,7 +253,7 @@ const llm_node: GraphNode<typeof State> = async (state, runtime) => {
         `),
         ...state.messages
     ])
-    return { messages: [response], LLM_calls: 1 }
+    return { messages: [response], LLM_calls: 1 };
 }
 
 const toolNode: GraphNode<typeof State> = async (state) => {
