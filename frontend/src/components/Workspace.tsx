@@ -44,7 +44,7 @@ export function Workspace({ user, onLogout }: Props) {
     useEffect(() => {
         bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [messages, pendingInterrupt]);
-    const handleSend = async (e: React.FormEvent<HTMLFormElement>) => {
+    const handleSend = async (e: React.SubmitEvent<HTMLFormElement>) => {
         e.preventDefault();
         const trimmed = input.trim();
         if (!trimmed || sending || pendingInterrupt) return;

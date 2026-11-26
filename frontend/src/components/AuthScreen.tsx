@@ -22,7 +22,7 @@ export function AuthScreen({ onSuccess }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (e: React.SubmitEvent<HTMLFormElement>) => {
     e.preventDefault();
     setError(null);
     setLoading(true);
@@ -39,8 +39,10 @@ export function AuthScreen({ onSuccess }: Props) {
       );
 
       setToken(res.token);
-      onSuccess(res.user);
+      // onSuccess(res.user);
+      console.log(res.user);
     } catch (err: any) {
+      console.log(err);
       setError(err.message || "Authentication failed");
     } finally {
       setLoading(false);
@@ -62,7 +64,7 @@ export function AuthScreen({ onSuccess }: Props) {
           <form onSubmit={handleSubmit} className="mt-6 space-y-4">
             {isRegister && (
               <div>
-                <label className="block text-xs font-medium text-slate-300">
+                <label className="block text-xs font-medium text-slate-300 mr-2">
                   Full Name
                 </label>
                 <input
