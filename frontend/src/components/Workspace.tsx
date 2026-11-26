@@ -1,6 +1,7 @@
 import React from "react";
 import { useState, useEffect, useRef } from "react";
 import { HitlApprovalCard } from "./HitlApprovalCard";
+import type { HitlInterruptPayload } from "./HitlApprovalCard";
 import type { UserSession } from "./AuthScreen";
 import { apiFetch, downloadResumePdf } from "../api/api";
 
@@ -23,7 +24,7 @@ export function Workspace({ user, onLogout }: Props) {
     }]);
     const [input, setInput] = useState("");
     const [sending, setSending] = useState(false);
-    const [pendingInterrupt, setPendingInterrupt] = useState(false);
+    const [pendingInterrupt, setPendingInterrupt] = useState<HitlInterruptPayload | null>(null);
     const [profile, setProfile] = useState<Record<string, any> | null>({});
     const [downloadingPdf, setDownloadingPdf] = useState(false);
     const [statusError, setStatusError] = useState<string | null>(null);
@@ -90,7 +91,7 @@ export function Workspace({ user, onLogout }: Props) {
                 setPendingInterrupt(res.interruptedPayload);
             }
             else {
-                setPendingInterrupt(false);
+                setPendingInterrupt(null);
                 if(res.reply) {
                     setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: "assistant", text: res.reply! }])
                 }
@@ -159,13 +160,13 @@ export function Workspace({ user, onLogout }: Props) {
               </div>
             ))}
 
-            {/* {pendingInterrupt && (
+            {pendingInterrupt && (
               <HitlApprovalCard
                 payload={pendingInterrupt}
-                onDecision={handleHitlDecision}
+                onDecision={handleHitlDescision}
                 disabled={sending}
               />
-            )} */}
+            )}
 
             {sending && !pendingInterrupt && (
               <div className="text-xs text-slate-400 animate-pulse">
